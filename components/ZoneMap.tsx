@@ -23,6 +23,7 @@ interface ZoneMapProps {
   zones: Zone[];
   userLocation: Coordinates | null;
   onMapClick?: (coords: Coordinates) => void;
+  onZoneClick?: (zone: Zone) => void;
   selectedZoneId?: string | null;
 }
 
@@ -51,7 +52,7 @@ const ClickHandler = ({ onClick }: { onClick: (coords: Coordinates) => void }) =
   return null;
 };
 
-const ZoneMap: React.FC<ZoneMapProps> = ({ zones, userLocation, onMapClick, selectedZoneId }) => {
+const ZoneMap: React.FC<ZoneMapProps> = ({ zones, userLocation, onMapClick, onZoneClick, selectedZoneId }) => {
   return (
     <MapContainer 
       center={[DEFAULT_CENTER.lat, DEFAULT_CENTER.lng]} 
@@ -69,6 +70,12 @@ const ZoneMap: React.FC<ZoneMapProps> = ({ zones, userLocation, onMapClick, sele
           key={zone.id}
           center={[zone.center.lat, zone.center.lng]}
           radius={zone.radiusMeters}
+          eventHandlers={{
+            click: (e) => {
+              L.DomEvent.stopPropagation(e);
+              onZoneClick?.(zone);
+            }
+          }}
           pathOptions={{
             color: selectedZoneId === zone.id ? '#2563eb' : '#ef4444', // Blue if selected, Red otherwise
             fillColor: selectedZoneId === zone.id ? '#3b82f6' : '#fca5a5',
@@ -77,6 +84,7 @@ const ZoneMap: React.FC<ZoneMapProps> = ({ zones, userLocation, onMapClick, sele
         >
           <Popup>
             <div className="font-semibold">{zone.name}</div>
+            {zone.description && <div className="text-xs text-gray-500 mb-1 italic">{zone.description}</div>}
             <div className="text-xs text-gray-600">Radius: {zone.radiusMeters}m</div>
           </Popup>
         </Circle>

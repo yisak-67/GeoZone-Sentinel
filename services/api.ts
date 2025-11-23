@@ -9,12 +9,16 @@ export const setBaseUrl = (url: string) => {
   API_BASE_URL = cleanUrl.endsWith('/api') ? cleanUrl : `${cleanUrl}/api`;
 };
 
-export const checkHealth = async (): Promise<boolean> => {
+export const checkHealth = async (): Promise<{ online: boolean; db?: boolean }> => {
   try {
     const response = await fetch(`${API_BASE_URL}/health`);
-    return response.ok;
+    if (response.ok) {
+        const data = await response.json();
+        return { online: true, db: data.database === 'connected' };
+    }
+    return { online: false };
   } catch (error) {
-    return false;
+    return { online: false };
   }
 };
 

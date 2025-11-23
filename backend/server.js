@@ -12,9 +12,58 @@ app.use(express.json());
 
 // Database Connection
 // Note: Ensure your DATABASE_URL is correct in your .env file or environment variables
+// Database Connection
 const pool = new Pool({
-  connectionString: process.env.DATABASE_URL || 'postgresql://postgres:postgres@localhost:5432/geozone_db'
+  user: 'postgres',
+  password: 'Yisak', // Empty password
+  host: 'localhost',
+  port: 5432,
+  database: 'geozone'
 });
+
+let usePostgis = true; // true if DB supports PostGIS
+
+// Ensure PostGIS and zones table exist (runs on startup)
+(async function initDb() {
+  const postgisSql = `
+    CREATE EXTENSION IF NOT EXISTS postgis;
+    CREATE TABLE IF NOT EXISTS zones (
+      id SERIAL PRIMARY KEY,
+      name TEXT NOT NULL,
+      radius_meters DOUBLE PRECISION NOT NULL,
+      description TEXT,
+      center GEOGRAPHY(Point,4326) NOT NULL,
+      created_at TIMESTAMP WITH TIME ZONE DEFAULT now()
+    );
+    CREATE INDEX IF NOT EXISTS idx_zones_center ON zones USING GIST (center);
+  `;
+  const fallbackSql = `
+    -- Fallback schema when PostGIS is not available: store lat/lng as numbers
+    CREATE TABLE IF NOT EXISTS zones (
+      id SERIAL PRIMARY KEY,
+      name TEXT NOT NULL,
+      radius_meters DOUBLE PRECISION NOT NULL,
+      description TEXT,
+      center_lat DOUBLE PRECISION NOT NULL,
+      center_lng DOUBLE PRECISION NOT NULL,
+      created_at TIMESTAMP WITH TIME ZONE DEFAULT now()
+    );
+  `;
+  try {
+    await pool.query(postgisSql);
+    usePostgis = true;
+    console.log('DB initialization complete (PostGIS enabled)');
+  } catch (err) {
+    console.warn('DB initialization error (PostGIS not available), using fallback schema:', err.message);
+    try {
+      await pool.query(fallbackSql);
+      usePostgis = false;
+      console.log('DB initialization complete (fallback without PostGIS)');
+    } catch (err2) {
+      console.error('DB initialization failed:', err2.message);
+    }
+  }
+})();
 
 // Helper to transform DB rows to frontend objects
 // IMPORTANT: Parse lat/lng as floats because some PG drivers return them as strings
@@ -40,22 +89,38 @@ app.get('/api/health', async (req, res) => {
 // GET /api/zones - List all zones
 app.get('/api/zones', async (req, res) => {
   try {
-    const query = `
-      SELECT 
-        id, 
-        name, 
-        radius_meters, 
-        description,
-        ST_Y(center::geometry) as lat, 
-        ST_X(center::geometry) as lng 
-      FROM zones
-      ORDER BY id DESC
-    `;
-    const result = await pool.query(query);
-    res.json(result.rows.map(transformZone));
+    let query;
+    if (usePostgis) {
+      query = `
+        SELECT 
+          id, 
+          name, 
+          radius_meters, 
+          description,
+          ST_Y(center::geometry) as lat, 
+          ST_X(center::geometry) as lng 
+        FROM zones
+        ORDER BY id DESC
+      `;
+      const result = await pool.query(query);
+      return res.json(result.rows.map(transformZone));
+    } else {
+      query = `
+        SELECT
+          id,
+          name,
+          radius_meters,
+          description,
+          center_lat AS lat,
+          center_lng AS lng
+        FROM zones
+        ORDER BY id DESC
+      `;
+      const result = await pool.query(query);
+      return res.json(result.rows.map(transformZone));
+    }
   } catch (err) {
     console.error('Error fetching zones:', err);
-    // Hint for common error
     if (err.code === '42P01') {
       return res.status(500).json({ error: 'Table "zones" does not exist. Did you run schema.sql?' });
     }
@@ -72,22 +137,32 @@ app.post('/api/zones', async (req, res) => {
   }
 
   try {
-    const query = `
-      INSERT INTO zones (name, radius_meters, center, description)
-      VALUES ($1, $2, ST_SetSRID(ST_MakePoint($3, $4), 4326)::geography, $5)
-      RETURNING 
-        id, 
-        name, 
-        radius_meters, 
-        description,
-        ST_Y(center::geometry) as lat, 
-        ST_X(center::geometry) as lng
-    `;
-    // Note: ST_MakePoint takes (lng, lat)
-    const values = [name, radiusMeters, center.lng, center.lat, description];
-    const result = await pool.query(query, values);
-    
-    res.status(201).json(transformZone(result.rows[0]));
+    if (usePostgis) {
+      const query = `
+        INSERT INTO zones (name, radius_meters, center, description)
+        VALUES ($1, $2, ST_SetSRID(ST_MakePoint($3, $4), 4326)::geography, $5)
+        RETURNING 
+          id, 
+          name, 
+          radius_meters, 
+          description,
+          ST_Y(center::geometry) as lat, 
+          ST_X(center::geometry) as lng
+      `;
+      const values = [name, radiusMeters, center.lng, center.lat, description];
+      const result = await pool.query(query, values);
+      return res.status(201).json(transformZone(result.rows[0]));
+    } else {
+      const query = `
+        INSERT INTO zones (name, radius_meters, center_lat, center_lng, description)
+        VALUES ($1, $2, $3, $4, $5)
+        RETURNING id, name, radius_meters, description, center_lat AS lat, center_lng AS lng
+      `;
+      // Note: values order = name, radius, lat, lng, description
+      const values = [name, radiusMeters, center.lat, center.lng, description];
+      const result = await pool.query(query, values);
+      return res.status(201).json(transformZone(result.rows[0]));
+    }
   } catch (err) {
     console.error('Error creating zone:', err);
     res.status(500).json({ error: 'Database error' });
@@ -103,31 +178,56 @@ app.post('/api/check-location', async (req, res) => {
   }
 
   try {
-    const query = `
-      SELECT 
-        id, 
-        name, 
-        radius_meters, 
-        description,
-        ST_Y(center::geometry) as lat, 
-        ST_X(center::geometry) as lng
-      FROM zones
-      WHERE ST_DWithin(
-        center, 
-        ST_SetSRID(ST_MakePoint($1, $2), 4326)::geography, 
-        radius_meters
-      )
-    `;
-    // Note: ST_MakePoint takes (lng, lat)
-    const result = await pool.query(query, [lng, lat]);
-    
-    const matchedZones = result.rows.map(transformZone);
-
-    res.json({
-      inZone: matchedZones.length > 0,
-      matchedZones,
-      userLocation: { lat, lng }
-    });
+    if (usePostgis) {
+      const query = `
+        SELECT 
+          id, 
+          name, 
+          radius_meters, 
+          description,
+          ST_Y(center::geometry) as lat, 
+          ST_X(center::geometry) as lng
+        FROM zones
+        WHERE ST_DWithin(
+          center, 
+          ST_SetSRID(ST_MakePoint($1, $2), 4326)::geography, 
+          radius_meters
+        )
+      `;
+      // Note: ST_MakePoint takes (lng, lat)
+      const result = await pool.query(query, [lng, lat]);
+      const matchedZones = result.rows.map(transformZone);
+      return res.json({
+        inZone: matchedZones.length > 0,
+        matchedZones,
+        userLocation: { lat, lng }
+      });
+    } else {
+      // Haversine distance in meters using SQL
+      const query = `
+        SELECT
+          id,
+          name,
+          radius_meters,
+          description,
+          center_lat AS lat,
+          center_lng AS lng,
+          (6371000 * acos(
+            cos(radians($1)) * cos(radians(center_lat)) *
+            cos(radians(center_lng) - radians($2)) +
+            sin(radians($1)) * sin(radians(center_lat))
+          )) AS distance_m
+        FROM zones
+        HAVING distance_m <= radius_meters
+      `;
+      const result = await pool.query(query, [lat, lng]);
+      const matchedZones = result.rows.map(transformZone);
+      return res.json({
+        inZone: matchedZones.length > 0,
+        matchedZones,
+        userLocation: { lat, lng }
+      });
+    }
   } catch (err) {
     console.error('Error checking location:', err);
     res.status(500).json({ error: 'Database error' });

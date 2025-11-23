@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { MapPin, ShieldAlert, List, Plus, Search, Globe, Bot, Database, WifiOff, RefreshCw, Settings, CheckCircle2 } from 'lucide-react';
+import { MapPin, ShieldAlert, List, Plus, Search, Globe, Bot, Database, WifiOff, RefreshCw, Settings, CheckCircle2, X, Info } from 'lucide-react';
 import ZoneMap from './components/ZoneMap';
 import BackendDocs from './components/BackendDocs';
 import { Zone, Coordinates, LocationCheckResult, Tab } from './types';
@@ -21,9 +21,11 @@ const App: React.FC = () => {
   const [zones, setZones] = useState<Zone[]>([
     { id: '1', name: 'Addis Ababa HQ', center: DEFAULT_CENTER, radiusMeters: 500, description: 'Main Headquarters' }
   ]);
+  const [selectedZone, setSelectedZone] = useState<Zone | null>(null);
   
   // State for Forms
   const [newZoneName, setNewZoneName] = useState('');
+  const [newZoneDescription, setNewZoneDescription] = useState('');
   const [newZoneLat, setNewZoneLat] = useState(DEFAULT_CENTER.lat.toString());
   const [newZoneLng, setNewZoneLng] = useState(DEFAULT_CENTER.lng.toString());
   const [newZoneRadius, setNewZoneRadius] = useState('500');
@@ -69,26 +71,38 @@ const App: React.FC = () => {
   const loadZonesFromBackend = async () => {
     try {
       setBackendError(null);
-      const isHealthy = await api.checkHealth();
-      if (!isHealthy) {
-        throw new Error("Health check failed. Server unreachable.");
+      const health = await api.checkHealth();
+      
+      if (!health.online) {
+        throw new Error("Server unreachable. Ensure 'node server.js' is running and URL is correct.");
       }
+      if (!health.db) {
+         throw new Error("Server connected, but Database unavailable. Check PostgreSQL connection.");
+      }
+
       const data = await api.fetchZones();
       setZones(data);
       setBackendConnected(true);
-    } catch (err) {
+    } catch (err: any) {
       console.error(err);
       setBackendConnected(false);
-      setBackendError("Connection failed.");
+      setBackendError(err.message || "Connection failed.");
       setShowBackendSettings(true); // Auto-show settings on error
     }
   };
 
   // Handlers
   const handleMapClick = (coords: Coordinates) => {
+    // If a zone is selected, clicking the map (background) should ideally clear selection or do nothing specific.
+    // For now, if in MANAGE mode and NO zone is selected, we update the "new zone" coordinates.
     if (activeTab === Tab.MANAGE) {
-      setNewZoneLat(coords.lat.toFixed(6));
-      setNewZoneLng(coords.lng.toFixed(6));
+      if (!selectedZone) {
+        setNewZoneLat(coords.lat.toFixed(6));
+        setNewZoneLng(coords.lng.toFixed(6));
+      } else {
+        // If a zone is selected, map click deselects it to allow creating new one
+        setSelectedZone(null);
+      }
     } else if (activeTab === Tab.CHECK) {
       setCheckLat(coords.lat.toFixed(6));
       setCheckLng(coords.lng.toFixed(6));
@@ -96,6 +110,11 @@ const App: React.FC = () => {
       // Auto check on click for better UX
       performLocationCheck(coords.lat, coords.lng);
     }
+  };
+
+  const handleZoneClick = (zone: Zone) => {
+    setSelectedZone(zone);
+    setActiveTab(Tab.MANAGE);
   };
 
   const handleCreateZone = async (e: React.FormEvent) => {
@@ -110,7 +129,7 @@ const App: React.FC = () => {
       name: newZoneName,
       center: { lat, lng },
       radiusMeters: radius,
-      description: aiReasoning || undefined
+      description: newZoneDescription || undefined
     };
 
     if (useBackend) {
@@ -118,6 +137,7 @@ const App: React.FC = () => {
         const createdZone = await api.createZone(newZoneBase);
         setZones([createdZone, ...zones]);
         setNewZoneName('');
+        setNewZoneDescription('');
         setAiReasoning(null);
       } catch (err) {
         setBackendError("Failed to save zone to backend.");
@@ -130,6 +150,7 @@ const App: React.FC = () => {
       };
       setZones([...zones, newZone]);
       setNewZoneName('');
+      setNewZoneDescription('');
       setAiReasoning(null);
     }
   };
@@ -145,6 +166,7 @@ const App: React.FC = () => {
     if (suggestion) {
         setNewZoneRadius(suggestion.suggestedRadius.toString());
         setAiReasoning(suggestion.reasoning);
+        setNewZoneDescription(suggestion.reasoning);
     }
   };
 
@@ -261,7 +283,7 @@ const App: React.FC = () => {
                       {backendError && (
                         <div className="mt-2 text-[10px] text-red-300 bg-red-900/20 p-1.5 rounded flex items-start gap-1">
                             <WifiOff className="w-3 h-3 shrink-0 mt-0.5" /> 
-                            <span>{backendError} Check "Docs" tab for startup help.</span>
+                            <span>{backendError}</span>
                         </div>
                       )}
                   </div>
@@ -297,85 +319,151 @@ const App: React.FC = () => {
           {/* MANAGE TAB */}
           {activeTab === Tab.MANAGE && (
             <div className="space-y-6">
-              <div className="bg-blue-50 p-4 rounded-lg border border-blue-100">
-                <h3 className="font-semibold text-blue-900 flex items-center gap-2 mb-3">
-                  <Plus className="w-4 h-4" /> Create New Zone
-                </h3>
-                <form onSubmit={handleCreateZone} className="space-y-3">
-                  <div>
-                    <label className="block text-xs font-medium text-slate-500 mb-1">Zone Name</label>
-                    <div className="flex gap-2">
+              
+              {selectedZone ? (
+                // VIEW MODE: Show Details for Selected Zone
+                <div className="bg-white p-4 rounded-lg border border-blue-200 shadow-md">
+                   <div className="flex justify-between items-start mb-4 border-b border-blue-100 pb-3">
+                      <div>
+                        <h3 className="font-bold text-lg text-slate-800">{selectedZone.name}</h3>
+                        <span className="text-[10px] bg-blue-100 text-blue-700 px-2 py-0.5 rounded-full uppercase tracking-wider font-semibold">
+                          Active Zone
+                        </span>
+                      </div>
+                      <button 
+                        onClick={() => setSelectedZone(null)} 
+                        className="text-slate-400 hover:text-slate-600 p-1 hover:bg-slate-100 rounded-full transition-colors"
+                        title="Close details"
+                      >
+                        <X className="w-5 h-5" />
+                      </button>
+                   </div>
+                   
+                   <div className="space-y-4">
+                      {selectedZone.description && (
+                        <div>
+                          <label className="block text-xs font-semibold text-slate-500 uppercase mb-1">Description</label>
+                          <p className="text-sm text-slate-700 bg-slate-50 p-2 rounded border border-slate-100">
+                            {selectedZone.description}
+                          </p>
+                        </div>
+                      )}
+                      
+                      <div className="grid grid-cols-2 gap-3">
+                        <div>
+                          <label className="block text-xs font-semibold text-slate-500 uppercase mb-1">Center</label>
+                          <p className="text-sm text-slate-800 font-mono">
+                             {selectedZone.center.lat.toFixed(5)}, {selectedZone.center.lng.toFixed(5)}
+                          </p>
+                        </div>
+                        <div>
+                           <label className="block text-xs font-semibold text-slate-500 uppercase mb-1">Radius</label>
+                           <p className="text-sm text-slate-800 font-mono">
+                              {selectedZone.radiusMeters} m
+                           </p>
+                        </div>
+                      </div>
+                      
+                      <div className="pt-2">
+                        <div className="text-xs text-blue-600 bg-blue-50 border border-blue-100 p-2 rounded flex items-start gap-2">
+                          <Info className="w-4 h-4 shrink-0 mt-0.5" />
+                          <span>This zone is currently active on the map. Click anywhere on the map to deselect it and create a new zone.</span>
+                        </div>
+                      </div>
+                   </div>
+                </div>
+              ) : (
+                // CREATE MODE: Show Form
+                <div className="bg-blue-50 p-4 rounded-lg border border-blue-100">
+                  <h3 className="font-semibold text-blue-900 flex items-center gap-2 mb-3">
+                    <Plus className="w-4 h-4" /> Create New Zone
+                  </h3>
+                  <form onSubmit={handleCreateZone} className="space-y-3">
+                    <div>
+                      <label className="block text-xs font-medium text-slate-500 mb-1">Zone Name</label>
+                      <div className="flex gap-2">
+                          <input 
+                            type="text" 
+                            value={newZoneName} 
+                            onChange={(e) => setNewZoneName(e.target.value)} 
+                            className="flex-1 rounded-md border border-slate-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                            placeholder="e.g. Central Park"
+                            required
+                          />
+                           <button 
+                              type="button"
+                              onClick={handleAskAi}
+                              disabled={!newZoneName || isAiLoading}
+                              className="bg-purple-100 hover:bg-purple-200 text-purple-700 p-2 rounded-md transition-colors disabled:opacity-50"
+                              title="Ask AI for radius and description"
+                          >
+                              <Bot className={`w-4 h-4 ${isAiLoading ? 'animate-pulse' : ''}`} />
+                          </button>
+                      </div>
+                      {aiReasoning && (
+                          <div className="mt-2 text-xs bg-purple-50 text-purple-800 p-2 rounded border border-purple-100 italic">
+                              AI: {aiReasoning}
+                          </div>
+                      )}
+                    </div>
+                    <div>
+                      <label className="block text-xs font-medium text-slate-500 mb-1">Description (Optional)</label>
+                      <textarea 
+                          value={newZoneDescription} 
+                          onChange={(e) => setNewZoneDescription(e.target.value)} 
+                          className="w-full rounded-md border border-slate-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                          placeholder="Zone details or notes..."
+                          rows={2}
+                      />
+                    </div>
+                    <div className="grid grid-cols-2 gap-2">
+                      <div>
+                        <label className="block text-xs font-medium text-slate-500 mb-1">Latitude</label>
                         <input 
-                          type="text" 
-                          value={newZoneName} 
-                          onChange={(e) => setNewZoneName(e.target.value)} 
-                          className="flex-1 rounded-md border border-slate-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-                          placeholder="e.g. Central Park"
+                          type="number" 
+                          step="any" 
+                          value={newZoneLat} 
+                          onChange={(e) => setNewZoneLat(e.target.value)} 
+                          className="w-full rounded-md border border-slate-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                          placeholder="Lat"
                           required
                         />
-                         <button 
-                            type="button"
-                            onClick={handleAskAi}
-                            disabled={!newZoneName || isAiLoading}
-                            className="bg-purple-100 hover:bg-purple-200 text-purple-700 p-2 rounded-md transition-colors disabled:opacity-50"
-                            title="Ask AI for radius"
-                        >
-                            <Bot className={`w-4 h-4 ${isAiLoading ? 'animate-pulse' : ''}`} />
-                        </button>
+                      </div>
+                      <div>
+                        <label className="block text-xs font-medium text-slate-500 mb-1">Longitude</label>
+                        <input 
+                          type="number" 
+                          step="any" 
+                          value={newZoneLng} 
+                          onChange={(e) => setNewZoneLng(e.target.value)} 
+                          className="w-full rounded-md border border-slate-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                          placeholder="Lng"
+                          required
+                        />
+                      </div>
                     </div>
-                    {aiReasoning && (
-                        <div className="mt-2 text-xs bg-purple-50 text-purple-800 p-2 rounded border border-purple-100 italic">
-                            AI: {aiReasoning}
-                        </div>
-                    )}
-                  </div>
-                  <div className="grid grid-cols-2 gap-2">
                     <div>
-                      <label className="block text-xs font-medium text-slate-500 mb-1">Latitude</label>
+                      <label className="block text-xs font-medium text-slate-500 mb-1">Radius (Meters)</label>
                       <input 
                         type="number" 
-                        step="any" 
-                        value={newZoneLat} 
-                        onChange={(e) => setNewZoneLat(e.target.value)} 
+                        value={newZoneRadius} 
+                        onChange={(e) => setNewZoneRadius(e.target.value)} 
                         className="w-full rounded-md border border-slate-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-                        placeholder="Lat"
+                        placeholder="500"
                         required
                       />
                     </div>
-                    <div>
-                      <label className="block text-xs font-medium text-slate-500 mb-1">Longitude</label>
-                      <input 
-                        type="number" 
-                        step="any" 
-                        value={newZoneLng} 
-                        onChange={(e) => setNewZoneLng(e.target.value)} 
-                        className="w-full rounded-md border border-slate-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-                        placeholder="Lng"
-                        required
-                      />
+                    <div className="flex gap-2 pt-2">
+                      <button type="button" onClick={handleUseCurrentLocation} className="flex-1 bg-white border border-slate-300 text-slate-600 py-2 rounded-md text-xs font-medium hover:bg-slate-50">
+                          Get GPS
+                      </button>
+                      <button type="submit" className="flex-1 bg-blue-600 text-white py-2 rounded-md text-xs font-medium hover:bg-blue-700 shadow-sm">
+                          {useBackend ? 'Save to DB' : 'Save Locally'}
+                      </button>
                     </div>
-                  </div>
-                  <div>
-                    <label className="block text-xs font-medium text-slate-500 mb-1">Radius (Meters)</label>
-                    <input 
-                      type="number" 
-                      value={newZoneRadius} 
-                      onChange={(e) => setNewZoneRadius(e.target.value)} 
-                      className="w-full rounded-md border border-slate-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-                      placeholder="500"
-                      required
-                    />
-                  </div>
-                  <div className="flex gap-2 pt-2">
-                    <button type="button" onClick={handleUseCurrentLocation} className="flex-1 bg-white border border-slate-300 text-slate-600 py-2 rounded-md text-xs font-medium hover:bg-slate-50">
-                        Get GPS
-                    </button>
-                    <button type="submit" className="flex-1 bg-blue-600 text-white py-2 rounded-md text-xs font-medium hover:bg-blue-700 shadow-sm">
-                        {useBackend ? 'Save to DB' : 'Save Locally'}
-                    </button>
-                  </div>
-                </form>
-              </div>
+                  </form>
+                </div>
+              )}
 
               <div>
                 <div className="flex justify-between items-center mb-3">
@@ -389,14 +477,26 @@ const App: React.FC = () => {
                       <div className="text-center py-4 text-slate-400 text-sm italic">No zones found.</div>
                   )}
                   {zones.map(zone => (
-                    <div key={zone.id} className="bg-white p-3 rounded-lg border border-slate-200 shadow-sm hover:shadow-md transition-shadow group">
+                    <div 
+                        key={zone.id} 
+                        onClick={() => handleZoneClick(zone)}
+                        className={`p-3 rounded-lg border shadow-sm transition-all cursor-pointer group 
+                            ${selectedZone?.id === zone.id 
+                                ? 'bg-blue-50 border-blue-400 ring-1 ring-blue-300 shadow-md' 
+                                : 'bg-white border-slate-200 hover:shadow-md hover:border-blue-200'}`}
+                    >
                       <div className="flex justify-between items-start">
-                          <div className="font-medium text-slate-800">{zone.name}</div>
-                          {zone.description && (
-                              <span className="text-[10px] bg-slate-100 text-slate-500 px-1 rounded">{zone.description.substring(0, 15)}...</span>
-                          )}
+                          <div className={`font-medium ${selectedZone?.id === zone.id ? 'text-blue-800' : 'text-slate-800'}`}>
+                              {zone.name}
+                          </div>
+                          {selectedZone?.id === zone.id && <CheckCircle2 className="w-4 h-4 text-blue-500" />}
                       </div>
-                      <div className="text-xs text-slate-500 mt-1 flex justify-between">
+                      {zone.description && (
+                          <div className="text-xs text-slate-500 mt-1 italic line-clamp-2">
+                             {zone.description}
+                          </div>
+                      )}
+                      <div className="text-xs text-slate-500 mt-2 flex justify-between border-t border-slate-100 pt-2">
                         <span>{zone.center.lat.toFixed(4)}, {zone.center.lng.toFixed(4)}</span>
                         <span className="font-semibold text-slate-600">{zone.radiusMeters}m</span>
                       </div>
@@ -492,11 +592,13 @@ const App: React.FC = () => {
         ) : (
             <>
                 <div className="absolute top-4 right-4 z-[400] bg-white/90 backdrop-blur-sm px-4 py-2 rounded-full shadow-md text-xs font-semibold text-slate-700 border border-slate-200 pointer-events-none">
-                    Mode: {activeTab === Tab.MANAGE ? 'Create Zone (Click Map)' : 'Check Location (Click Map)'}
+                    Mode: {activeTab === Tab.MANAGE ? (selectedZone ? 'Viewing Selected Zone' : 'Create Zone (Click Map)') : 'Check Location (Click Map)'}
                 </div>
                 <ZoneMap 
                     zones={zones} 
                     onMapClick={handleMapClick}
+                    onZoneClick={handleZoneClick}
+                    selectedZoneId={selectedZone?.id}
                     userLocation={activeTab === Tab.CHECK ? userMapLocation : null}
                 />
             </>
