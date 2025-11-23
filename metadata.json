@@ -1,0 +1,7 @@
+{
+  "name": "GeoZone Sentinel",
+  "description": "A location-based notification system allowing users to define geographic zones and check location containment. Features a mock PostGIS simulation and AI-powered zone suggestions.",
+  "requestFramePermissions": [
+    "geolocation"
+  ]
+}
